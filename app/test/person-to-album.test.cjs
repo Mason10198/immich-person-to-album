@@ -7,9 +7,9 @@ const path = require('node:path')
 
 const functionPath = path.resolve(__dirname, '../dist/function.js')
 
-function loadSubject ({ search = async () => ({ assets: { items: [], nextPage: null } }), add = async () => {} } = {}) {
+function loadSubject ({ search = async () => ({ assets: { items: [], nextPage: null } }), add = async () => {}, faces = async () => { throw new Error('Unexpected face lookup') } } = {}) {
   const storeData = new Map()
-  const calls = { searches: [], additions: [], writes: [] }
+  const calls = { searches: [], additions: [], writes: [], faces: [] }
   const store = {
     get: key => storeData.get(key),
     set: async (key, value) => {
@@ -18,6 +18,10 @@ function loadSubject ({ search = async () => ({ assets: { items: [], nextPage: n
     }
   }
   const sdk = {
+    getFaces: async args => {
+      calls.faces.push(args)
+      return faces(args, calls)
+    },
     searchAssets: async args => {
       calls.searches.push(args)
       return search(args, calls)
@@ -184,4 +188,130 @@ test('successful add advances the checkpoint; already-present duplicate is harml
   assert.deepEqual(calls.additions[0].bulkIdsDto.ids, ['already-there'])
   assert.equal(storeData.get(key), '2024-06-01')
   assert.equal(calls.writes.length, 1)
+})
+
+
+const face = id => ({ person: id === null ? null : { id } })
+
+function filteredFixture (assetFaces, overrides = {}) {
+  return loadSubject({
+    search: async () => ({ assets: { items: Object.keys(assetFaces).map(id => item(id, '2026-01-01')), nextPage: null } }),
+    faces: async ({ id }) => assetFaces[id],
+    ...overrides
+  })
+}
+
+test('default all-people rule needs no face-read calls and allows additional people', async () => {
+  const { subject, calls } = loadSubject({ search: async () => ({ assets: { items: [item('with-others', '2026-01-01')], nextPage: null } }) })
+  await subject.processPerson(multi(['a', 'b']))
+  assert.equal(calls.faces.length, 0)
+  assert.deepEqual(calls.additions[0].bulkIdsDto.ids, ['with-others'])
+})
+
+test('all A and B but not C rejects C and allows unrelated or unnamed faces', async () => {
+  const { subject, calls } = filteredFixture({
+    pair: [face('a'), face('b')],
+    excluded: [face('a'), face('b'), face('c')],
+    unrelated: [face('a'), face('b'), face('d')],
+    unnamed: [face('a'), face('b'), face(null)]
+  })
+  await subject.processPerson(multi(['b', 'a'], { excludePersonIds: ['c'] }))
+  assert.deepEqual(calls.additions[0].bulkIdsDto.ids, ['pair', 'unrelated', 'unnamed'])
+  assert.equal(calls.faces.length, 4)
+})
+
+test('only A and C rejects other recognized and unnamed faces but allows repeat detections of A', async () => {
+  const { subject, calls } = filteredFixture({
+    pair: [face('a'), face('c')],
+    other: [face('a'), face('c'), face('b')],
+    unnamed: [face('a'), face('c'), face(null)],
+    repeated: [face('a'), face('c'), face('a')],
+    missing: [face('a')],
+    empty: []
+  })
+  await subject.processPerson(multi(['a', 'c'], { allowOtherPeople: false }))
+  assert.deepEqual(calls.additions[0].bulkIdsDto.ids, ['pair', 'repeated'])
+})
+
+test('exclusions and strict-only mode can be combined', async () => {
+  const { subject, calls } = filteredFixture({ pair: [face('a'), face('b')], other: [face('a'), face('b'), face('d')] })
+  await subject.processPerson(multi(['a', 'b'], { excludePersonIds: ['c'], allowOtherPeople: false }))
+  assert.deepEqual(calls.additions[0].bulkIdsDto.ids, ['pair'])
+})
+
+test('filter options also work with legacy single-person rules', async () => {
+  const { subject, calls } = filteredFixture({ alone: [face('personA')], other: [face('personA'), face('b')] })
+  await subject.processPerson(legacy({ allowOtherPeople: false }))
+  assert.deepEqual(calls.additions[0].bulkIdsDto.ids, ['alone'])
+})
+
+test('a changed face list missing a required person is rejected for exclusion rules too', async () => {
+  const { subject, calls } = filteredFixture({ stale: [face('a'), face('d')] })
+  await subject.processPerson(multi(['a', 'b'], { excludePersonIds: ['c'] }))
+  assert.equal(calls.additions.length, 0)
+})
+
+test('all rejected candidates cause no empty bulk addition and still checkpoint the completed scan', async () => {
+  const { subject, calls, storeData } = filteredFixture({ excluded: [face('a'), face('b'), face('c')] })
+  const link = multi(['a', 'b'], { excludePersonIds: ['c'] })
+  await subject.processPerson(link)
+  assert.equal(calls.additions.length, 0)
+  assert.equal(storeData.get(subject.getUpdateKeyName(link)), '2026-01-01')
+})
+
+test('filter checkpoint keys are canonical, rule-sensitive, and preserve old default keys', () => {
+  const { subject } = loadSubject()
+  const original = subject.getUpdateKeyName(multi(['a', 'b']))
+  assert.equal(subject.getUpdateKeyName(multi(['b', 'a'], { excludePersonIds: [], allowOtherPeople: true })), original)
+  const excluded = subject.getUpdateKeyName(multi(['b', 'a'], { excludePersonIds: ['d', 'c', 'd'] }))
+  assert.equal(subject.getUpdateKeyName(multi(['a', 'b'], { excludePersonIds: ['c', 'd'] })), excluded)
+  assert.notEqual(excluded, original)
+  assert.notEqual(subject.getUpdateKeyName(multi(['a', 'b'], { excludePersonIds: ['c'] })), excluded)
+  assert.notEqual(subject.getUpdateKeyName(multi(['a', 'b'], { allowOtherPeople: false })), original)
+  assert.notEqual(subject.getUpdateKeyName(multi(['a', 'b'], { allowOtherPeople: false })), excluded)
+})
+
+test('invalid exclusion/strict options reject before network and checkpoint writes', async t => {
+  const invalid = [
+    { excludePersonIds: ['a'] }, { excludePersonIds: 'c' }, { excludePersonIds: null },
+    { excludePersonIds: [''] }, { excludePersonIds: [' c'] }, { excludePersonIds: [false] },
+    { allowOtherPeople: 'false' }, { allowOtherPeople: null }, { allowOtherPeople: 0 }
+  ]
+  for (const options of invalid) {
+    await t.test(JSON.stringify(options), async () => {
+      const { subject, calls } = loadSubject()
+      await assert.rejects(subject.processPerson(multi(['a', 'b'], options)))
+      assert.equal(calls.searches.length, 0)
+      assert.equal(calls.faces.length, 0)
+      assert.equal(calls.writes.length, 0)
+    })
+  }
+})
+
+test('face-read failure never advances the checkpoint or silently includes a candidate', async () => {
+  const { subject, calls, storeData } = filteredFixture({ one: [] }, { faces: async () => { throw new Error('403 face.read required') } })
+  const link = multi(['a', 'b'], { allowOtherPeople: false })
+  const key = subject.getUpdateKeyName(link)
+  storeData.set(key, 'old')
+  await assert.rejects(subject.processPerson(link), /face.read/)
+  assert.equal(calls.additions.length, 0)
+  assert.equal(calls.writes.length, 0)
+  assert.equal(storeData.get(key), 'old')
+})
+
+test('malformed face response fails closed instead of proving exclusion', async () => {
+  const { subject, calls } = filteredFixture({ one: [face('a'), face('b'), {}] })
+  await assert.rejects(subject.processPerson(multi(['a', 'b'], { excludePersonIds: ['c'] })))
+  assert.equal(calls.additions.length, 0)
+  assert.equal(calls.writes.length, 0)
+})
+
+test('negative/exact rules filter on every page without dropping video assets', async () => {
+  const { subject, calls } = loadSubject({
+    search: async ({ metadataSearchDto: dto }) => ({ assets: { items: [{ ...item(dto.page === 1 ? 'photo' : 'video', '2026-01-01'), type: dto.page === 1 ? 'IMAGE' : 'VIDEO' }], nextPage: dto.page === 1 ? '2' : null } }),
+    faces: async () => [face('a'), face('b')]
+  })
+  await subject.processPerson(multi(['a', 'b'], { excludePersonIds: ['c'], allowOtherPeople: false }))
+  assert.deepEqual(calls.additions.map(c => c.bulkIdsDto.ids), [['photo'], ['video']])
+  assert.deepEqual(calls.faces.map(c => c.id), ['photo', 'video'])
 })

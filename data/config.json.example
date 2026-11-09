@@ -14,6 +14,18 @@
           "description": "Photos and videos of Joe and Alice together",
           "personIds": ["Joe's person ID", "Alice's person ID"],
           "albumId": "Album for both people together"
+        },
+        {
+          "description": "Joe and Alice, but not Sam",
+          "personIds": ["Joe's person ID", "Alice's person ID"],
+          "excludePersonIds": ["Sam's person ID"],
+          "albumId": "Album excluding Sam"
+        },
+        {
+          "description": "Only Joe and Alice, no other people",
+          "personIds": ["Joe's person ID", "Alice's person ID"],
+          "allowOtherPeople": false,
+          "albumId": "Album for exactly these people"
         }
       ]
     }

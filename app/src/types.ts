@@ -13,6 +13,14 @@ interface LinkBase {
   description?: string;
   albumId: string;
   apiKeyShort: string;
+  excludePersonIds?: string[];
+  allowOtherPeople?: boolean;
+}
+
+export interface PersonRule {
+  personIds: string[];
+  excludePersonIds: string[];
+  allowOtherPeople: boolean;
 }
 
 export type Link = LinkBase & (

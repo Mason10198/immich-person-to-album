@@ -25,8 +25,9 @@ where **all** selected people are recognized in the same asset:
 }
 ```
 
-Place this rule in a user's `personLinks` array. Other people may also appear in
-the photo or video; this is not an "exactly these faces and no others" filter.
+Place this rule in a user's `personLinks` array. By default, other people may also
+appear in the photo or video. Set `allowOtherPeople: false` for a stricter rule,
+as described below.
 Immich performs the AND match on the server, so the asset response does not need
 to include a list of people. Matching depends on Immich's face assignments.
 
@@ -41,6 +42,70 @@ to include a list of people. Matching depends on Immich's face assignments.
 - Albums remain add-only: correcting a face assignment does not remove an item
   already added to an album. Existing incremental-sync limitations still apply;
   face assignments changed after a scan may not update the asset's `updatedAt`.
+
+### Logical rules: required, excluded, or only these people
+
+These optional settings work with either `personId` or `personIds`:
+
+| Setting | Meaning | Default |
+| --- | --- | --- |
+| `personIds` | Every selected person must appear in the same asset (AND). | Use this or legacy `personId`. |
+| `excludePersonIds` | None of these recognized people may appear (NOT). | `[]` |
+| `allowOtherPeople` | Whether additional people may appear. | `true` |
+
+Replace the placeholder IDs with your Immich person and album IDs.
+
+**A and B, other people allowed:**
+
+```json
+{
+  "personIds": ["PERSON_A_ID", "PERSON_B_ID"],
+  "albumId": "ALBUM_ID"
+}
+```
+
+**A and B, but not C; other people still allowed:**
+
+```json
+{
+  "personIds": ["PERSON_A_ID", "PERSON_B_ID"],
+  "excludePersonIds": ["PERSON_C_ID"],
+  "albumId": "ALBUM_ID"
+}
+```
+
+**Only A and C, no additional people:**
+
+```json
+{
+  "personIds": ["PERSON_A_ID", "PERSON_C_ID"],
+  "allowOtherPeople": false,
+  "albumId": "ALBUM_ID"
+}
+```
+
+Exclusion and strict-only rules require **`face.read`** in addition to
+`asset.read` and `albumAsset.create`. They retrieve the complete visible face
+list for each candidate; ordinary AND rules do not need the extra permission or
+face requests. Face-read errors stop the rule without advancing its checkpoint.
+
+Strict-only rules conservatively reject an asset containing an **unnamed face**,
+as well as any recognized person outside the required set. Multiple detections
+of the same required person are allowed. Exclusion-only rules reject the named
+excluded identities, but do not reject unrelated or unnamed people. Required
+and excluded sets must not overlap; invalid options fail before any API call.
+
+These rules can only use the visible face detections and identities Immich
+exposes. They cannot guarantee a real-world absence of other people when faces
+were not detected, were hidden, or were misidentified. Videos use the face
+information available for that asset, not an independent check of every frame.
+
+Changing exclusions or `allowOtherPeople` creates a new checkpoint and scans
+that rule afresh. Explicit defaults, ID order, and duplicate IDs do not reset
+progress. A completed scan can checkpoint candidates rejected by the filters;
+the existing face-change/`updatedAt` caveat still applies. Tightening a rule
+does **not** remove old album items: use a fresh album or separately review and
+remove unwanted memberships. No rule deletes original media.
 
 ### Development tests
 
@@ -106,6 +171,7 @@ Alternatively, you can add the configuration inline in your `docker-compose.yml`
 5. Click **New API Key**
 6. Give it a name
 7. Add the permissions of `asset.read` and `albumAsset.create`
+   (also `face.read` for exclusion or strict-only rules)
 8. Click **Create**
 9. Copy the new API key and put it in your config file 
 

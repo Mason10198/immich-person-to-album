@@ -1,5 +1,5 @@
-import { Link, Config } from './types'
-import { addAssetsToAlbum, searchAssets } from '@immich/sdk'
+import { Link, Config, PersonRule } from './types'
+import { addAssetsToAlbum, searchAssets, getFaces, AssetFaceResponseDto } from '@immich/sdk'
 import store from './store'
 import path from 'path'
 
@@ -29,7 +29,8 @@ export class PersonToAlbum {
   }
 
   async processPerson (link: Link) {
-    const personIds = this.getPersonIds(link)
+    const rule = this.getRule(link)
+    const { personIds } = rule
     const updateKey = this.getUpdateKeyName(link)
     let nextPage: string | null = '1'
     let mostRecent
@@ -55,12 +56,18 @@ export class PersonToAlbum {
         // Preserve the existing incremental-sync behavior for single-person rules.
         if (!mostRecent) mostRecent = res.assets.items[0].updatedAt
 
-        await addAssetsToAlbum({
-          id: link.albumId,
-          bulkIdsDto: {
-            ids: res.assets.items.map(x => x.id)
+        const ids: string[] = []
+        for (const asset of res.assets.items) {
+          if (rule.excludePersonIds.length > 0 || !rule.allowOtherPeople) {
+            // A full face list includes unnamed faces; withPeople alone does not.
+            const faces = await getFaces({ id: asset.id })
+            if (!this.matchesRule(rule, faces)) continue
           }
-        })
+          ids.push(asset.id)
+        }
+        if (ids.length > 0) {
+          await addAssetsToAlbum({ id: link.albumId, bulkIdsDto: { ids } })
+        }
       }
       nextPage = res.assets.nextPage
     }
@@ -74,9 +81,13 @@ export class PersonToAlbum {
    * Get the correctly formatted key name for most-recent updated value in the store
    */
   getUpdateKeyName (link: Link) {
-    const personIds = this.getPersonIds(link)
+    const rule = this.getRule(link)
+    const { personIds } = rule
     // Keep legacy keys intact; canonicalize combinations so order is irrelevant.
-    const personKey = personIds.length === 1 ? personIds[0] : `all:${JSON.stringify(personIds)}`
+    let personKey = personIds.length === 1 ? personIds[0] : `all:${JSON.stringify(personIds)}`
+    if (rule.excludePersonIds.length > 0 || !rule.allowOtherPeople) {
+      personKey = `rule:${JSON.stringify(rule)}`
+    }
     return [link.apiKeyShort, personKey, link.albumId].join(':')
   }
 
@@ -93,5 +104,47 @@ export class PersonToAlbum {
       throw new Error('Person IDs must be nonempty strings without surrounding whitespace')
     }
     return [...new Set(ids as string[])].sort()
+  }
+
+  getRule (link: Link): PersonRule {
+    const personIds = this.getPersonIds(link)
+    const excluded = link.excludePersonIds === undefined ? [] : link.excludePersonIds
+    if (!Array.isArray(excluded) || excluded.some(id =>
+      typeof id !== 'string' || id.length === 0 || id !== id.trim()
+    )) {
+      throw new Error('excludePersonIds must be an array of nonempty person IDs without surrounding whitespace')
+    }
+    const excludePersonIds = [...new Set(excluded)].sort()
+    if (excludePersonIds.some(id => personIds.includes(id))) {
+      throw new Error('A person cannot be both required and excluded')
+    }
+    if (link.allowOtherPeople !== undefined && typeof link.allowOtherPeople !== 'boolean') {
+      throw new Error('allowOtherPeople must be a boolean')
+    }
+    return { personIds, excludePersonIds, allowOtherPeople: link.allowOtherPeople ?? true }
+  }
+
+  matchesRule (rule: PersonRule, faces: AssetFaceResponseDto[]): boolean {
+    const recognized = new Set<string>()
+    let hasUnnamedFace = false
+    for (const face of faces) {
+      if (!face || !Object.prototype.hasOwnProperty.call(face, 'person')) {
+        throw new Error('Incomplete face response; cannot safely evaluate the rule')
+      }
+      if (face.person === null) {
+        hasUnnamedFace = true
+      } else if (typeof face.person?.id === 'string' && face.person.id.length > 0) {
+        recognized.add(face.person.id)
+      } else {
+        throw new Error('Incomplete person identity; cannot safely evaluate the rule')
+      }
+    }
+    // Recheck required faces in case assignments changed since the search.
+    if (!rule.personIds.every(id => recognized.has(id))) return false
+    if (rule.excludePersonIds.some(id => recognized.has(id))) return false
+    if (!rule.allowOtherPeople && (hasUnnamedFace || [...recognized].some(id => !rule.personIds.includes(id)))) {
+      return false
+    }
+    return true
   }
 }
