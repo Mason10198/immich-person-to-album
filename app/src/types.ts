@@ -9,9 +9,13 @@ export interface User {
   personLinks: Link[]
 }
 
-export interface Link {
+interface LinkBase {
   description?: string;
-  personId: string;
   albumId: string;
   apiKeyShort: string;
 }
+
+export type Link = LinkBase & (
+  | { personId: string; personIds?: never }
+  | { personId?: never; personIds: string[] }
+)

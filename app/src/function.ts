@@ -29,11 +29,13 @@ export class PersonToAlbum {
   }
 
   async processPerson (link: Link) {
+    const personIds = this.getPersonIds(link)
+    const updateKey = this.getUpdateKeyName(link)
     let nextPage: string | null = '1'
     let mostRecent
 
     if (link.description) console.log(`=== ${link.description} ===`)
-    console.log(`Adding person ${link.personId} to album ${link.albumId}`)
+    console.log(`Adding assets containing all of ${personIds.join(', ')} to album ${link.albumId}`)
 
     while (nextPage !== null) {
       console.log(` - Processing page ${nextPage}`)
@@ -43,25 +45,28 @@ export class PersonToAlbum {
           // the asset was updated in Immich, and nothing to do with the EXIF data.
           // https://immich.app/docs/api/get-asset-info
           // This may also be the case for `created`, but it doesn't specify that in the docs.
-          updatedAfter: store.get(this.getUpdateKeyName(link)),
+          updatedAfter: store.get(updateKey),
           page: parseInt(nextPage, 10), // why is `nextPage` a string and `page` a number? ¯\_(ツ)_/¯
-          personIds: [link.personId]
+          // Immich matches every person in this array (AND), not any person (OR).
+          personIds
         }
       })
-      // Track the most recent photo timestamp so we can update the store
-      if (!mostRecent) mostRecent = res.assets.items[0].updatedAt
+      if (res.assets.items.length > 0) {
+        // Preserve the existing incremental-sync behavior for single-person rules.
+        if (!mostRecent) mostRecent = res.assets.items[0].updatedAt
 
-      await addAssetsToAlbum({
-        id: link.albumId,
-        bulkIdsDto: {
-          ids: res.assets.items.map(x => x.id)
-        }
-      })
+        await addAssetsToAlbum({
+          id: link.albumId,
+          bulkIdsDto: {
+            ids: res.assets.items.map(x => x.id)
+          }
+        })
+      }
       nextPage = res.assets.nextPage
     }
 
     // Store the most recent asset update value so we can start processing only newer items next time.
-    await store.set(this.getUpdateKeyName(link), mostRecent)
+    if (mostRecent) await store.set(updateKey, mostRecent)
     console.log()
   }
 
@@ -69,6 +74,24 @@ export class PersonToAlbum {
    * Get the correctly formatted key name for most-recent updated value in the store
    */
   getUpdateKeyName (link: Link) {
-    return [link.apiKeyShort, link.personId, link.albumId].join(':')
+    const personIds = this.getPersonIds(link)
+    // Keep legacy keys intact; canonicalize combinations so order is irrelevant.
+    const personKey = personIds.length === 1 ? personIds[0] : `all:${JSON.stringify(personIds)}`
+    return [link.apiKeyShort, personKey, link.albumId].join(':')
+  }
+
+  getPersonIds (link: Link): string[] {
+    const hasPersonId = link.personId !== undefined
+    const hasPersonIds = link.personIds !== undefined
+    if (hasPersonId === hasPersonIds) {
+      throw new Error('Specify exactly one of personId or personIds for each rule')
+    }
+    const ids = hasPersonId ? [link.personId] : link.personIds
+    if (!Array.isArray(ids) || ids.length === 0 || ids.some(id =>
+      typeof id !== 'string' || id.length === 0 || id !== id.trim()
+    )) {
+      throw new Error('Person IDs must be nonempty strings without surrounding whitespace')
+    }
+    return [...new Set(ids as string[])].sort()
   }
 }

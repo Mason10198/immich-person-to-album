@@ -9,6 +9,11 @@
           "description": "Photos of Joe",
           "personId": "Joe's person ID",
           "albumId": "Shared album ID"
+        },
+        {
+          "description": "Photos and videos of Joe and Alice together",
+          "personIds": ["Joe's person ID", "Alice's person ID"],
+          "albumId": "Album for both people together"
         }
       ]
     }

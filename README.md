@@ -9,6 +9,46 @@ members and is automatically updated.
 You can use API keys from any number of Immich users, so the one Docker container can handle doing automatic
 albums for all your users.
 
+### Require multiple people together (AND)
+
+Use `personIds` instead of `personId` in a rule to include only photos and videos
+where **all** selected people are recognized in the same asset:
+
+```json
+{
+  "description": "Alex and Sam together",
+  "personIds": [
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222"
+  ],
+  "albumId": "33333333-3333-4333-8333-333333333333"
+}
+```
+
+Place this rule in a user's `personLinks` array. Other people may also appear in
+the photo or video; this is not an "exactly these faces and no others" filter.
+Immich performs the AND match on the server, so the asset response does not need
+to include a list of people. Matching depends on Immich's face assignments.
+
+- Existing `personId` rules and their saved progress continue to work unchanged.
+- Specify exactly one of `personId` or a nonempty `personIds` array per rule.
+- Person ID order and duplicate IDs do not change the rule or its saved progress.
+  Changing the set of people starts a new scan for that combination.
+- To match **any** selected person (OR), keep using separate `personId` rules
+  pointing to the same album. Do not use `personIds` for OR matching.
+- For multiple users' libraries, add the same rule under each user's API key.
+  Each user must be able to add to the destination album (owner or editor).
+- Albums remain add-only: correcting a face assignment does not remove an item
+  already added to an album. Existing incremental-sync limitations still apply;
+  face assignments changed after a scan may not update the asset's `updatedAt`.
+
+### Development tests
+
+Run `npm ci` followed by `npm run test:unit` from the `app` directory. Tests use
+Node.js's built-in test runner with mocked API/storage calls; no Immich server,
+API key, Docker, or additional test dependency is required. The existing
+`npm test` container smoke-test command is unchanged.
+
 ## Setup
 
 Take a copy of the [docker-compose.yml](https://github.com/alangrainger/immich-person-to-album/blob/main/docker-compose.yml) file.
