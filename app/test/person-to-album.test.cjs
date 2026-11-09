@@ -315,3 +315,42 @@ test('negative/exact rules filter on every page without dropping video assets', 
   assert.deepEqual(calls.additions.map(c => c.bulkIdsDto.ids), [['photo'], ['video']])
   assert.deepEqual(calls.faces.map(c => c.id), ['photo', 'video'])
 })
+
+
+test('full matching ignores incremental state, follows every page, and makes no writes', async () => {
+  const { subject, calls, storeData } = loadSubject({ search: async ({ metadataSearchDto: dto }) => ({ assets: { items: [item(dto.page === 1 ? 'old-photo' : 'old-video', '2020-01-01')], nextPage: dto.page === 1 ? '2' : null } }) })
+  const link = multi(['a', 'b'], { sync: true })
+  storeData.set(subject.getUpdateKeyName(link), '2099-01-01')
+  assert.deepEqual([...await subject.getMatchingAssetIds(link)], ['old-photo', 'old-video'])
+  assert.ok(calls.searches.every(x => x.metadataSearchDto.updatedAfter === undefined))
+  assert.equal(calls.additions.length, 0)
+  assert.equal(calls.writes.length, 0)
+})
+
+test('full matching applies exclusion/strict rules before returning IDs', async () => {
+  const { subject, calls } = filteredFixture({ pair: [face('a'), face('b')], other: [face('a'), face('b'), face('c')] })
+  assert.deepEqual([...await subject.getMatchingAssetIds(multi(['a', 'b'], { allowOtherPeople: false }))], ['pair'])
+  assert.equal(calls.additions.length, 0)
+  assert.equal(calls.writes.length, 0)
+})
+
+test('full matching aborts a failed later page rather than returning partial results', async () => {
+  const { subject, calls } = loadSubject({ search: async ({ metadataSearchDto: dto }) => {
+    if (dto.page === 2) throw new Error('later page failed')
+    return { assets: { items: [item('one', '2020-01-01')], nextPage: '2' } }
+  } })
+  await assert.rejects(subject.getMatchingAssetIds(legacy()), /later page failed/)
+  assert.equal(calls.additions.length, 0)
+  assert.equal(calls.writes.length, 0)
+})
+
+test('full matching rejects looping pagination', async () => {
+  const { subject } = loadSubject({ search: async () => ({ assets: { items: [item('one', '2020-01-01')], nextPage: '1' } }) })
+  await assert.rejects(subject.getMatchingAssetIds(legacy()), /pagination/i)
+})
+
+test('sync option must be a boolean', async () => {
+  const { subject, calls } = loadSubject()
+  await assert.rejects(subject.processPerson(legacy({ sync: 'true' })))
+  assert.equal(calls.searches.length, 0)
+})

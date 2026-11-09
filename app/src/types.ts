@@ -15,6 +15,7 @@ interface LinkBase {
   apiKeyShort: string;
   excludePersonIds?: string[];
   allowOtherPeople?: boolean;
+  sync?: boolean;
 }
 
 export interface PersonRule {

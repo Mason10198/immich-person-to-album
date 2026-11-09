@@ -56,15 +56,7 @@ export class PersonToAlbum {
         // Preserve the existing incremental-sync behavior for single-person rules.
         if (!mostRecent) mostRecent = res.assets.items[0].updatedAt
 
-        const ids: string[] = []
-        for (const asset of res.assets.items) {
-          if (rule.excludePersonIds.length > 0 || !rule.allowOtherPeople) {
-            // A full face list includes unnamed faces; withPeople alone does not.
-            const faces = await getFaces({ id: asset.id })
-            if (!this.matchesRule(rule, faces)) continue
-          }
-          ids.push(asset.id)
-        }
+        const ids = await this.filterAssetIds(rule, res.assets.items)
         if (ids.length > 0) {
           await addAssetsToAlbum({ id: link.albumId, bulkIdsDto: { ids } })
         }
@@ -75,6 +67,37 @@ export class PersonToAlbum {
     // Store the most recent asset update value so we can start processing only newer items next time.
     if (mostRecent) await store.set(updateKey, mostRecent)
     console.log()
+  }
+
+  /** Full, read-only scan for album reconciliation; never use incremental state. */
+  async getMatchingAssetIds (link: Link): Promise<Set<string>> {
+    const rule = this.getRule(link)
+    const ids = new Set<string>()
+    let page = 1
+    while (true) {
+      const res = await searchAssets({ metadataSearchDto: { personIds: rule.personIds, page } })
+      if (!res.assets || !Array.isArray(res.assets.items)) throw new Error('Incomplete search response')
+      for (const id of await this.filterAssetIds(rule, res.assets.items)) ids.add(id)
+      const next = res.assets.nextPage
+      if (next === null) return ids
+      if (typeof next !== 'string' || !/^\d+$/.test(next) || !Number.isSafeInteger(Number(next)) || Number(next) <= page) {
+        throw new Error('Invalid or looping search pagination')
+      }
+      page = Number(next)
+    }
+  }
+
+  private async filterAssetIds (rule: PersonRule, assets: { id: string }[]): Promise<string[]> {
+    const ids: string[] = []
+    for (const asset of assets) {
+      if (rule.excludePersonIds.length > 0 || !rule.allowOtherPeople) {
+        // A full face list includes unnamed faces; withPeople alone does not.
+        const faces = await getFaces({ id: asset.id })
+        if (!this.matchesRule(rule, faces)) continue
+      }
+      ids.push(asset.id)
+    }
+    return ids
   }
 
   /**
@@ -107,6 +130,7 @@ export class PersonToAlbum {
   }
 
   getRule (link: Link): PersonRule {
+    if (link.sync !== undefined && typeof link.sync !== 'boolean') throw new Error('sync must be a boolean')
     const personIds = this.getPersonIds(link)
     const excluded = link.excludePersonIds === undefined ? [] : link.excludePersonIds
     if (!Array.isArray(excluded) || excluded.some(id =>

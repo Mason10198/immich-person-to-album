@@ -39,9 +39,10 @@ to include a list of people. Matching depends on Immich's face assignments.
   pointing to the same album. Do not use `personIds` for OR matching.
 - For multiple users' libraries, add the same rule under each user's API key.
   Each user must be able to add to the destination album (owner or editor).
-- Albums remain add-only: correcting a face assignment does not remove an item
+- By default, albums remain add-only: correcting a face assignment does not remove an item
   already added to an album. Existing incremental-sync limitations still apply;
   face assignments changed after a scan may not update the asset's `updatedAt`.
+  Optional `sync: true` below enables full scans and membership cleanup.
 
 ### Logical rules: required, excluded, or only these people
 
@@ -104,8 +105,60 @@ Changing exclusions or `allowOtherPeople` creates a new checkpoint and scans
 that rule afresh. Explicit defaults, ID order, and duplicate IDs do not reset
 progress. A completed scan can checkpoint candidates rejected by the filters;
 the existing face-change/`updatedAt` caveat still applies. Tightening a rule
-does **not** remove old album items: use a fresh album or separately review and
-remove unwanted memberships. No rule deletes original media.
+does **not** remove old album items unless `sync: true` is enabled: otherwise use
+a fresh album or separately review/remove unwanted memberships. No rule deletes
+original media.
+
+### Keep a shared album synchronized (optional cleanup)
+
+Set `sync: true` on **every rule targeting the album**, including rules under
+other users' API keys. This uses a full scan on startup and each scheduled run,
+so later face-assignment changes are picked up even if asset `updatedAt` did not
+change. Ordinary rules remain add-only and incremental.
+
+For a shared album, put its owner's account first in `users`. That account's key
+needs `albumAsset.delete` in addition to `asset.read` and `albumAsset.create`;
+other contributors retain their usual permissions. Exclusion/strict rules still
+need `face.read` for each account using them.
+
+```json
+{
+  "immichServer": "http://immich-server:2283",
+  "schedule": "*/30 * * * *",
+  "users": [
+    {
+      "apiKey": "ALBUM_OWNER_KEY",
+      "personLinks": [
+        {"personIds": ["A_ID", "B_ID"], "albumId": "SHARED_ALBUM_ID", "sync": true}
+      ]
+    },
+    {
+      "apiKey": "CONTRIBUTOR_KEY",
+      "personLinks": [
+        {"personIds": ["A_ID", "B_ID"], "albumId": "SHARED_ALBUM_ID", "sync": true}
+      ]
+    }
+  ]
+}
+```
+
+The coordinator first scans **all** users/rules for that album and combines the
+matching IDs. It adds each contributor's missing matches using that account's
+key, then removes album memberships outside the combined set using the first
+participant's key. It never deletes original media. A failed/incomplete scan,
+failed album listing, or failed addition prevents cleanup; conflicting sync
+settings are rejected rather than silently ignoring a contributor. Operations
+are serialized, and the final album contents are read back and verified.
+
+**A synchronized album is rule-managed.** Nonmatching manual additions will be
+removed too. A successful, completely empty matching set clears the album (not
+the library). Use this only for albums where that behavior is intended. Leave
+`sync` absent or false on albums whose manual contents must be preserved.
+
+This full-scan/set-comparison approach adapts the existing
+`mafr95/immich-person-to-album` implementation, with a shared-album coordinator
+instead of per-rule cleanup. See `docs/PROVENANCE.md` for the pinned source and
+license record. It is not a separate service.
 
 ### Development tests
 
